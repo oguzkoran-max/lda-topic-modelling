@@ -19,6 +19,8 @@ import zipfile
 import platform
 from datetime import datetime
 
+from collections import Counter
+
 import numpy as np
 import pandas as pd
 import spacy
@@ -276,6 +278,49 @@ def compute_coherence(lda_model, feature_names, token_lists, n_words=TOP_N_WORDS
         return cm.get_coherence()
     except Exception:
         return None
+
+
+def compute_corpus_stats(
+    raw_texts: list[str],
+    all_token_lists: list[list[str]],
+    nlp,
+) -> dict:
+    """Derlem istatistiklerini hesapla."""
+    # Ham metin istatistikleri
+    raw_combined = " ".join(raw_texts)
+    raw_words = raw_combined.split()
+    raw_word_count = len(raw_words)
+    raw_char_count = len(raw_combined)
+
+    # Temizlenmiş token istatistikleri
+    all_tokens_flat = [t for tl in all_token_lists for t in tl]
+    clean_token_count = len(all_tokens_flat)
+    clean_type_count = len(set(all_tokens_flat))
+
+    # Type-Token Ratio
+    ttr = clean_type_count / clean_token_count if clean_token_count > 0 else 0.0
+
+    # Frekans dağılımı
+    freq = Counter(all_tokens_flat)
+    top_50 = freq.most_common(50)
+
+    # Hapax legomena (yalnızca 1 kez geçen)
+    hapax = sum(1 for w, c in freq.items() if c == 1)
+
+    # Ortalama parça uzunluğu
+    avg_chunk_len = np.mean([len(tl) for tl in all_token_lists])
+
+    return {
+        "raw_word_count": raw_word_count,
+        "raw_char_count": raw_char_count,
+        "clean_token_count": clean_token_count,
+        "clean_type_count": clean_type_count,
+        "ttr": ttr,
+        "top_50": top_50,
+        "hapax_count": hapax,
+        "avg_chunk_len": avg_chunk_len,
+        "freq": freq,
+    }
 
 
 def generate_wordcloud(words_weights: dict[str, float]) -> plt.Figure:
@@ -700,6 +745,145 @@ if uploaded_files:
                         f"🟢 Dahil: {n_kept} | 🔴 Çıkarılan: {len(tdf) - n_kept}"
                     )
 
+        # ── 2b. Derlem İstatistikleri ─────────────────────────────
+        with st.spinner("Derlem istatistikleri hesaplanıyor…"):
+            corpus_stats = compute_corpus_stats(raw_texts, all_token_lists, nlp)
+
+        st.subheader(
+            "📊 Derlem İstatistikleri",
+            help="Analiz öncesi derlem hakkında temel nicel bilgiler.\n\n"
+                 "Bu veriler, LDA sonuçlarını yorumlamak için bağlam sağlar. "
+                 "Akademik makalenizin veri tanıtım bölümünde bu istatistikleri raporlayın.\n\n"
+                 "**Type-Token Ratio (TTR):** Sözcüksel çeşitliliği ölçer. "
+                 "Yüksek TTR → metin zengin ve çeşitli bir söz varlığı kullanıyor. "
+                 "Düşük TTR → metin daha tekrarlayıcı.\n\n"
+                 "**Hapax Legomena:** Yalnızca 1 kez geçen kelimeler. "
+                 "Dilbilimde Zipf yasasına göre, herhangi bir korpusta kelimelerin büyük "
+                 "bir oranı yalnızca bir kez geçer.",
+        )
+
+        # Özet metrikler
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric(
+            "Ham Sözcük",
+            f"{corpus_stats['raw_word_count']:,}".replace(",", "."),
+            help="Ön-işleme öncesi, ham metindeki toplam sözcük sayısı (whitespace split).",
+        )
+        s2.metric(
+            "Temiz Token",
+            f"{corpus_stats['clean_token_count']:,}".replace(",", "."),
+            help="Lemmatizasyon, POS filtresi ve stopword temizliği sonrası kalan token sayısı. "
+                 "Bu sayı, LDA'ya girdi olarak verilen toplam kelime miktarıdır.",
+        )
+        s3.metric(
+            "Benzersiz Kelime (Type)",
+            f"{corpus_stats['clean_type_count']:,}".replace(",", "."),
+            help="Temizlenmiş tokenlar arasındaki farklı kelime sayısı. "
+                 "LDA'nın sözlük boyutunu etkiler.",
+        )
+        s4.metric(
+            "TTR",
+            f"{corpus_stats['ttr']:.3f}",
+            help="Type-Token Ratio = benzersiz kelime / toplam token. "
+                 "Sözcüksel çeşitliliğin temel göstergesi.\n\n"
+                 "• **> 0.20** → Çeşitli söz varlığı\n\n"
+                 "• **0.05 – 0.20** → Orta düzey\n\n"
+                 "• **< 0.05** → Tekrarlayıcı metin\n\n"
+                 "⚠️ TTR, metin uzunluğuna duyarlıdır: uzun metinlerde doğal olarak düşer.",
+        )
+
+        s5, s6, s7, s8 = st.columns(4)
+        s5.metric(
+            "Karakter Sayısı",
+            f"{corpus_stats['raw_char_count']:,}".replace(",", "."),
+            help="Ham metindeki toplam karakter sayısı (boşluklar dahil).",
+        )
+        s6.metric(
+            "Hapax Legomena",
+            f"{corpus_stats['hapax_count']:,}".replace(",", "."),
+            help="Yalnızca 1 kez geçen kelime sayısı. "
+                 "Zipf yasasına göre, doğal dil metinlerinde kelimelerin yaklaşık "
+                 "%40–60'ı hapax legomena'dır.",
+        )
+        s7.metric(
+            "Hapax Oranı",
+            f"{corpus_stats['hapax_count'] / corpus_stats['clean_type_count'] * 100:.1f}%"
+            if corpus_stats['clean_type_count'] > 0 else "—",
+            help="Hapax legomena / benzersiz kelime sayısı. "
+                 "Doğal dil metinlerinde %40–60 arası normaldir.",
+        )
+        s8.metric(
+            "Ort. Parça Uzunluğu",
+            f"{corpus_stats['avg_chunk_len']:.0f} token",
+            help="LDA'ya verilen parçaların ortalama token sayısı.",
+        )
+
+        # En sık 50 kelime — bar chart
+        with st.expander("📈 En Sık 50 Kelime (Frekans Dağılımı)", expanded=True):
+            st.markdown(
+                "Ön-işleme sonrası **en sık geçen 50 kelime**. "
+                "Bu liste, LDA'ya girdi olan temizlenmiş sözlükteki dağılımı gösterir."
+            )
+            top_50_df = pd.DataFrame(
+                corpus_stats["top_50"], columns=["Kelime", "Frekans"]
+            )
+            if not top_50_df.empty:
+                freq_chart = (
+                    alt.Chart(top_50_df)
+                    .mark_bar(color="#2563EB")
+                    .encode(
+                        x=alt.X("Frekans:Q", title="Frekans"),
+                        y=alt.Y("Kelime:N", sort="-x", title="Kelime"),
+                        tooltip=["Kelime", "Frekans"],
+                    )
+                    .properties(height=max(400, len(top_50_df) * 18))
+                )
+                st.altair_chart(freq_chart, use_container_width=True)
+
+                st.dataframe(
+                    top_50_df.style.format({"Frekans": "{:,}"}),
+                    use_container_width=True,
+                    height=300,
+                )
+
+            st.info(
+                "💡 **İpucu:** Bu listede birden fazla topic'te tekrar eden anlamsız kelimeler "
+                "görüyorsanız, onları sol paneldeki **özel stopword** alanına ekleyin ve "
+                "analizi yeniden çalıştırın."
+            )
+
+        with st.expander("📖 Derlem İstatistikleri Ne Anlama Geliyor?"):
+            st.markdown(f"""
+**Derlem profili özeti:**
+
+| İstatistik | Değer | Açıklama |
+|---|---|---|
+| Ham sözcük sayısı | {corpus_stats['raw_word_count']:,} | Ön-işleme öncesi toplam sözcük |
+| Temiz token sayısı | {corpus_stats['clean_token_count']:,} | LDA'ya girdi olan kelime sayısı |
+| Benzersiz kelime (type) | {corpus_stats['clean_type_count']:,} | Farklı kelime sayısı |
+| Type-Token Ratio | {corpus_stats['ttr']:.4f} | Sözcüksel çeşitlilik |
+| Hapax legomena | {corpus_stats['hapax_count']:,} | Yalnızca 1 kez geçen kelimeler |
+| Filtreleme oranı | {(1 - corpus_stats['clean_token_count'] / corpus_stats['raw_word_count']) * 100:.1f}% | Ham metinden ne kadarı elendi |
+
+**Bu sayıları nasıl yorumlamalı?**
+
+1. **Filtreleme oranı:** Ön-işleme, ham metnin yaklaşık %{(1 - corpus_stats['clean_token_count'] / corpus_stats['raw_word_count']) * 100:.0f}'ini eledi.
+   Bu normaldir — İtalyanca metinlerde stopword, noktalama ve fonksiyon kelimeleri
+   metnin %60–80'ini oluşturur.
+
+2. **TTR ({corpus_stats['ttr']:.3f}):** {"Yüksek sözcüksel çeşitlilik — metin zengin bir söz varlığı kullanıyor." if corpus_stats['ttr'] > 0.20 else "Orta/düşük TTR — uzun metinlerde bu normaldir (tekrar eden kelimeler artar)." }
+
+3. **Hapax oranı:** Benzersiz kelimelerin %{corpus_stats['hapax_count'] / corpus_stats['clean_type_count'] * 100:.0f}'i yalnızca bir kez geçiyor.
+   Bu, doğal dil metinlerinde beklenen bir Zipf dağılımıdır.
+
+**Akademik bağlam:** Derlem istatistikleri, sonuçlarınızı kontekstüalize eder.
+Çok küçük bir derlem (< 1.000 token) üzerinde LDA sonuçları güvenilir olmayabilir.
+Genel kural: en az **2.000–5.000 temiz token** ile çalışmak önerilir.
+
+> **Referans:** Zipf, G.K. (1949). *Human Behavior and the Principle of Least Effort*.
+> Addison-Wesley.
+""")
+
         # ── 3. Vektörizasyon ─────────────────────────────────────
         with st.spinner("CountVectorizer…"):
             text_chunks = [" ".join(tl) for tl in all_token_lists]
@@ -1093,9 +1277,37 @@ indirilebilir çıktılarda mevcuttur."
         csv_buf = io.StringIO()
         df_dist.to_csv(csv_buf, index=False)
 
+        # Derlem istatistikleri raporu
+        corpus_stats_lines = [
+            "═══ DERLEM İSTATİSTİKLERİ ═══",
+            f"Ham sözcük sayısı       : {corpus_stats['raw_word_count']:,}",
+            f"Ham karakter sayısı     : {corpus_stats['raw_char_count']:,}",
+            f"Temiz token sayısı      : {corpus_stats['clean_token_count']:,}",
+            f"Benzersiz kelime (type) : {corpus_stats['clean_type_count']:,}",
+            f"Type-Token Ratio (TTR)  : {corpus_stats['ttr']:.4f}",
+            f"Hapax legomena          : {corpus_stats['hapax_count']:,}",
+            f"Ort. parça uzunluğu     : {corpus_stats['avg_chunk_len']:.0f} token",
+            f"Filtreleme oranı        : {(1 - corpus_stats['clean_token_count'] / corpus_stats['raw_word_count']) * 100:.1f}%",
+            "",
+            "═══ EN SIK 50 KELİME ═══",
+        ]
+        for rank, (word, count) in enumerate(corpus_stats["top_50"], 1):
+            corpus_stats_lines.append(f"{rank:>3}. {word:<25} {count:>6}")
+        corpus_stats_txt = "\n".join(corpus_stats_lines)
+
+        # Frekans CSV
+        freq_csv_buf = io.StringIO()
+        freq_df_all = pd.DataFrame(
+            sorted(corpus_stats["freq"].items(), key=lambda x: -x[1]),
+            columns=["Kelime", "Frekans"],
+        )
+        freq_df_all.to_csv(freq_csv_buf, index=False)
+
         output_files = {
             "topics.txt": topics_txt,
             "doc_topic_distribution.csv": csv_buf.getvalue(),
+            "corpus_statistics.txt": corpus_stats_txt,
+            "word_frequencies.csv": freq_csv_buf.getvalue(),
             "metrics.txt": metrics_txt,
             "model_parameters.txt": params_txt,
             "environment_report.txt": env_txt,
